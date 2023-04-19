@@ -3,5 +3,6 @@
 
 int recover(int argc, char **argv);
 int validate_usage(int argc, char **argv);
+int printFSInfo(char **argv);
 
 #endif

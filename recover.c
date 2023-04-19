@@ -1,16 +1,54 @@
 #include <stdio.h>
+#include <stdint.h>
 #include <stdlib.h>
+#include <fcntl.h>
+#include <sys/mman.h>
+#include <sys/stat.h>
 #include <unistd.h>
 #include <string.h>
 
 #include "recover.h"
 
+#pragma pack(push,1)
+typedef struct BootEntry {
+    unsigned char BS_jmpBoot[3];
+    unsigned char BS_OEMName[8];
+    unsigned short BPB_BytsPerSec;
+    unsigned char BPB_SecPerClus;
+    unsigned short BPB_RsvdSecCnt;
+    unsigned char BPB_NumFATs;
+    unsigned short BPB_RootEntCnt;
+    unsigned short BPB_TotSec16;
+    unsigned char BPB_Media;
+    unsigned short BPB_FATSz16;
+    unsigned short BPB_SecPerTrk;
+    unsigned short BPB_NumHeads;
+    unsigned int BPB_HiddSec;
+    unsigned int BPB_TotSec32;
+    unsigned int BPB_FATSz32;
+    unsigned short BPB_ExtFlags;
+    unsigned short BPB_FSVer;
+    unsigned int BPB_RootClus;
+    unsigned short BPB_FSInfo;
+    unsigned short BPB_BkBootSec;
+    unsigned char BPB_Reserved[12];
+    unsigned char BS_DrvNum;
+    unsigned char BS_Reserved1;
+    unsigned char BS_BootSig;
+    unsigned int BS_VolID;
+    unsigned char BS_VolLab[11];
+    unsigned char BS_FilSysType[8];
+} BootEntry;
+#pragma pack(pop)
+             
 int recover(int argc, char **argv){
 
     // Milestone 1: validate usage
     if(validate_usage(argc,argv) != 0){
-        return -1;
+        return 1;
     }
+
+
 
     return 0;
 }
@@ -25,14 +63,14 @@ int validate_usage(int argc, char **argv){
 
     if(argc < 2){
         printf("%s", error_message);
-        return -1;
+        return 1;
     }
 
-    int disk_len = strlen(argv[1]);
-    if (disk_len < 5 || strcmp(argv[1] + disk_len - 5, ".disk") != 0) {
+    if (access(argv[1], F_OK) == -1) {
         printf("%s", error_message);
-        return -1;
+        return 1;
     }
+
     int option;
     int i_flag = 0, l_flag = 0, r_flag = 0, R_flag = 0, s_flag = 0;
     char *filename = NULL;
@@ -46,7 +84,6 @@ int validate_usage(int argc, char **argv){
     while ((option = getopt(argc, argv, "ilr:R:s:")) != -1) {
         switch(option){
             case 'i':
-                printf("option i\n");
                 i_flag = 1;
                 break;          
             case 'l':
@@ -56,7 +93,7 @@ int validate_usage(int argc, char **argv){
             case 'r':
                 if(optarg == NULL){
                     printf("%s", error_message);
-                    return -1;
+                    return 1;
                 }
                 r_flag = 1;
                 filename = optarg;
@@ -64,7 +101,7 @@ int validate_usage(int argc, char **argv){
             case 's':
                 if(optarg == NULL){
                     printf("%s", error_message);
-                    return -1;
+                    return 1;
                 }
                 s_flag = 1;
                 sha1 = optarg;
@@ -72,20 +109,20 @@ int validate_usage(int argc, char **argv){
             case 'R':
                 if(optarg == NULL){
                     printf("%s", error_message);
-                    return -1;
+                    return 1;
                 }
                 R_flag = 1;
                 filename = optarg;
                 break;
             default:
                 printf("%s", error_message);
-                return -1;
+                return 1;
         }
     }
 
     if(i_flag){
         // Print the file system information.
-        printf("i flag is on\n");
+        return printFSInfo(argv);
     }else if(l_flag){
         // Print List the root directory.
         printf("l flag is on\n");
@@ -100,8 +137,41 @@ int validate_usage(int argc, char **argv){
         printf("Recover a possibly non-contiguous file.\n");
     }else if(R_flag && !s_flag){
         printf("%s", error_message);
-        return -1;
+        return 1;
     }
+
+    return 0;
+}
+
+int printFSInfo(char **argv){
+    // Open file
+    int fd = open(argv[1], O_RDONLY);
+    if(fd < 0){
+        perror("Error opening file");
+        return 1;
+    }
+
+    // Get file size
+    struct stat st;
+    if (fstat(fd, &st) == -1){
+        perror("Error opening file");
+        return 1;
+    }
+    // Map file into memory
+    char *data = mmap(NULL, st.st_size, PROT_READ, MAP_PRIVATE, fd, 0);
+    if (data == MAP_FAILED) {
+            perror("Error mapping file");
+            close(fd);
+            return 1;
+        }
+    BootEntry *bs = (BootEntry *)data;
+    printf("Number of FATs = %d\n", bs->BPB_NumFATs);
+    printf("Number of bytes per sector = %d\n", bs->BPB_BytsPerSec);
+    printf("Number of sectors per cluster = %d\n", bs->BPB_SecPerClus);
+    printf("Number of reserved sectors = %d\n", bs->BPB_RsvdSecCnt);
+
+    munmap(data, st.st_size);
+    close(fd);
 
     return 0;
 }
