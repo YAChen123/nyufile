@@ -9,7 +9,7 @@
             "type": "cppdbg",
             "request": "launch",
             "program": "${workspaceFolder}/nyufile",
-            "args": ["./nyufile-autograder/disks/disk2", "-i"],
+            "args": ["disk3", "-l"],
             "externalConsole": true,
             "logging": {
               "moduleLoad": false,

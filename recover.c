@@ -40,16 +40,36 @@ typedef struct BootEntry {
     unsigned char BS_FilSysType[8];
 } BootEntry;
 #pragma pack(pop)
-             
+
+#pragma pack(push,1)
+typedef struct DirEntry {
+    unsigned char DIR_Name[11];
+    unsigned char DIR_Attr;
+    unsigned char DIR_NTRes;
+    unsigned char DIR_CrtTimeTenth; 
+    unsigned short DIR_CrtTime;     
+    unsigned short DIR_CrtDate;    
+    unsigned short DIR_LstAccDate;  
+    unsigned short DIR_FstClusHI;
+    unsigned short DIR_WrtTime;
+    unsigned short DIR_WrtDate;
+    unsigned short DIR_FstClusLO;
+    unsigned int DIR_FileSize;
+} DirEntry;
+#pragma pack(pop)
+
+typedef struct {
+    int fd;
+    size_t size;
+    unsigned char *data;
+} DiskData;
+ 
 int recover(int argc, char **argv){
 
     // Milestone 1: validate usage
     if(validate_usage(argc,argv) != 0){
         return 1;
     }
-
-
-
     return 0;
 }
 
@@ -87,7 +107,6 @@ int validate_usage(int argc, char **argv){
                 i_flag = 1;
                 break;          
             case 'l':
-                printf("option l\n");
                 l_flag = 1;
                 break;
             case 'r':
@@ -121,11 +140,11 @@ int validate_usage(int argc, char **argv){
     }
 
     if(i_flag){
-        // Print the file system information.
+        // Milestone 2: Print the file system information.
         return printFSInfo(argv);
     }else if(l_flag){
-        // Print List the root directory.
-        printf("l flag is on\n");
+        // Milestone 3: list the root directory.
+        return listRootDir(argv);
     }else if(r_flag && !s_flag){
         // Recover a contiguous file without shal
         printf("Recover a contiguous file without shal\n");
@@ -143,35 +162,151 @@ int validate_usage(int argc, char **argv){
     return 0;
 }
 
-int printFSInfo(char **argv){
-    // Open file
-    int fd = open(argv[1], O_RDONLY);
-    if(fd < 0){
-        perror("Error opening file");
-        return 1;
+DiskData *getDiskData(const char  *disk_path){
+    DiskData *disk_data = malloc(sizeof(DiskData));
+    if (!disk_data) {
+        perror("Error allocating memory");
+        return NULL;
     }
-
+    // Open file
+    disk_data->fd = open(disk_path, O_RDONLY);
+    if (disk_data->fd < 0) {
+        perror("Error opening file");
+        free(disk_data);
+        return NULL;
+    }
     // Get file size
     struct stat st;
-    if (fstat(fd, &st) == -1){
+    if (fstat(disk_data->fd, &st) == -1) {
         perror("Error opening file");
+        close(disk_data->fd);
+        free(disk_data);
+        return NULL;
+    }
+    disk_data->size = st.st_size;
+    // Map file into memory
+    disk_data->data = mmap(NULL, disk_data->size, PROT_READ, MAP_PRIVATE, disk_data->fd, 0);
+    if (disk_data->data == MAP_FAILED) {
+        perror("Error mapping file");
+        close(disk_data->fd);
+        free(disk_data);
+        return NULL;
+    }
+
+    return disk_data;
+}
+
+void freeDiskData(DiskData *disk_data) {
+    if(disk_data) {
+        if (disk_data->data != MAP_FAILED) {
+            munmap(disk_data->data, disk_data->size);
+        }
+        if (disk_data->fd >= 0) {
+            close(disk_data->fd);
+        }
+        free(disk_data);
+    }
+}
+
+BootEntry *getBootEntry(const char *disk_path){
+    BootEntry *boot_entry = (BootEntry *)malloc(sizeof(BootEntry));
+    if (boot_entry == NULL) {
+        perror("Failed to allocate memory for BootEntry.\n");
+        return NULL;
+    }
+    DiskData *diskData = getDiskData(disk_path);
+    if(diskData == NULL){
+        return NULL;
+    }
+    memcpy(boot_entry, diskData->data, sizeof(BootEntry)); // Copy data into boot_entry
+    freeDiskData(diskData);
+    return boot_entry;
+}
+
+int printFSInfo(char **argv){
+    BootEntry *bs = getBootEntry(argv[1]);
+    if(bs != NULL){
+        printf("Number of FATs = %d\n", bs->BPB_NumFATs);
+        printf("Number of bytes per sector = %d\n", bs->BPB_BytsPerSec);
+        printf("Number of sectors per cluster = %d\n", bs->BPB_SecPerClus);
+        printf("Number of reserved sectors = %d\n", bs->BPB_RsvdSecCnt);
+        free(bs);  
+    }
+    return 0;
+}
+
+int listRootDir(char **argv){
+    BootEntry *bs = getBootEntry(argv[1]);
+    if(bs == NULL){
         return 1;
     }
-    // Map file into memory
-    char *data = mmap(NULL, st.st_size, PROT_READ, MAP_PRIVATE, fd, 0);
-    if (data == MAP_FAILED) {
-            perror("Error mapping file");
-            close(fd);
-            return 1;
+    unsigned int first_data_sector = bs->BPB_RsvdSecCnt + (bs->BPB_NumFATs * bs->BPB_FATSz32);
+    unsigned int first_root_dir_cluster = bs->BPB_RootClus;
+    unsigned int root_dir_size = bs->BPB_BytsPerSec * bs->BPB_SecPerClus;
+
+    DiskData *diskData = getDiskData(argv[1]);
+    if(diskData == NULL){
+        free(bs);
+        return 1;
+    }
+
+    int entry_count = 0;
+    // Follow the cluster chain in the FAT
+    unsigned int current_cluster = first_root_dir_cluster;
+    while (current_cluster < 0x0FFFFFF7) {
+        unsigned int first_sector = first_data_sector + ((current_cluster - 2) * bs->BPB_SecPerClus);
+        unsigned char *dir_data = diskData->data + (first_sector * bs->BPB_BytsPerSec);
+        
+        for(unsigned int i = 0; i< root_dir_size; i+= sizeof(DirEntry)){
+            DirEntry *dirEntry = (DirEntry *)(dir_data + i);
+
+            // skip deleted directory
+            if(dirEntry->DIR_Name[0] == 0x00 || dirEntry->DIR_Name[0] == 0xE5){
+                continue;
+            }
+            // skep LFN
+            if(dirEntry->DIR_Attr == 0x0F){
+                continue;
+            }
+            // print the 8.3 filename
+            for(int j = 0; j< 8; j++){
+                if(dirEntry->DIR_Name[j] != ' '){
+                    printf("%c",dirEntry->DIR_Name[j]);
+                }
+            }
+
+            //if the entry is a directory, you should append a / indicator.
+            if(dirEntry->DIR_Attr == 0x10){
+                // Directory entry
+                printf("/ (starting cluster = %u)\n", dirEntry->DIR_FstClusLO);
+            }else{
+                // Non Empty Entry
+                if (dirEntry->DIR_FileSize != 0) {
+                    for(int k = 8; k< 11; k++){
+                        if(dirEntry->DIR_Name[k] != ' '){
+                            if(k == 8){
+                                printf(".");
+                            }
+                            printf("%c",dirEntry->DIR_Name[k]);
+                        }
+                    }
+                }
+                // File entry
+                printf(" (size = %u", dirEntry->DIR_FileSize);
+                if (dirEntry->DIR_FileSize != 0) {
+                    printf(", starting cluster = %u", dirEntry->DIR_FstClusLO);
+                }
+                printf(")\n");
+            }
+            entry_count++;
         }
-    BootEntry *bs = (BootEntry *)data;
-    printf("Number of FATs = %d\n", bs->BPB_NumFATs);
-    printf("Number of bytes per sector = %d\n", bs->BPB_BytsPerSec);
-    printf("Number of sectors per cluster = %d\n", bs->BPB_SecPerClus);
-    printf("Number of reserved sectors = %d\n", bs->BPB_RsvdSecCnt);
-
-    munmap(data, st.st_size);
-    close(fd);
-
+        // Find the next cluster in the FAT
+        unsigned int fat_offset = bs->BPB_RsvdSecCnt * bs->BPB_BytsPerSec + current_cluster * 4;
+        current_cluster = *((unsigned int *)(diskData->data + fat_offset)) & 0x0FFFFFFF;
+    }
+    printf("Total number of entries = %u\n", entry_count);
+    // Clean up
+    freeDiskData(diskData);
+    free(bs);
     return 0;
 }
