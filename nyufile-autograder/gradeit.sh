@@ -46,7 +46,7 @@ check_output() {
 }
 
 check_file() {
-  diff refoutputs/$1 myoutputs/$1 && diff reffiles/$2 <(mtype -i disk ::/$2) && passed $1 || failed $1
+  diff refoutputs/$1 myoutputs/$1 && diff reffiles/$2 <(mtype -i disk ::/$2 2>&1) && passed $1 || failed $1
 }
 
 invoke() {

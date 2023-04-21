@@ -147,7 +147,7 @@ int validate_usage(int argc, char **argv){
         return listRootDir(argv);
     }else if(r_flag && !s_flag){
         // Recover a contiguous file without shal
-        printf("Recover a contiguous file without shal\n");
+        return recoverFile(argv[1], filename);
     }else if(r_flag && s_flag){
         // Recover a contiguous file shal
         printf("Recover a contiguous file with shal\n");
@@ -169,7 +169,7 @@ DiskData *getDiskData(const char  *disk_path){
         return NULL;
     }
     // Open file
-    disk_data->fd = open(disk_path, O_RDONLY);
+    disk_data->fd = open(disk_path, O_RDWR);
     if (disk_data->fd < 0) {
         perror("Error opening file");
         free(disk_data);
@@ -178,14 +178,14 @@ DiskData *getDiskData(const char  *disk_path){
     // Get file size
     struct stat st;
     if (fstat(disk_data->fd, &st) == -1) {
-        perror("Error opening file");
+        perror("Error getting file stats");
         close(disk_data->fd);
         free(disk_data);
         return NULL;
     }
     disk_data->size = st.st_size;
     // Map file into memory
-    disk_data->data = mmap(NULL, disk_data->size, PROT_READ, MAP_PRIVATE, disk_data->fd, 0);
+    disk_data->data = mmap(NULL, disk_data->size, PROT_READ | PROT_WRITE, MAP_SHARED, disk_data->fd, 0);
     if (disk_data->data == MAP_FAILED) {
         perror("Error mapping file");
         close(disk_data->fd);
@@ -305,6 +305,96 @@ int listRootDir(char **argv){
         current_cluster = *((unsigned int *)(diskData->data + fat_offset)) & 0x0FFFFFFF;
     }
     printf("Total number of entries = %u\n", entry_count);
+    // Clean up
+    freeDiskData(diskData);
+    free(bs);
+    return 0;
+}
+
+int recoverFile(const char *disk_path, char *filename){
+    BootEntry *bs = getBootEntry(disk_path);
+    if(bs == NULL){
+        return 1;
+    }
+    unsigned int first_data_sector = bs->BPB_RsvdSecCnt + (bs->BPB_NumFATs * bs->BPB_FATSz32);
+    unsigned int first_root_dir_cluster = bs->BPB_RootClus;
+    unsigned int root_dir_size = bs->BPB_BytsPerSec * bs->BPB_SecPerClus;
+
+    DiskData *diskData = getDiskData(disk_path);
+    if(diskData == NULL){
+        free(bs);
+        return 1;
+    }
+
+    int fileDeleted = 0;
+
+    // Follow the cluster chain in the FAT
+    unsigned int current_cluster = first_root_dir_cluster;
+    while (current_cluster < 0x0FFFFFF7) {
+        unsigned int first_sector = first_data_sector + ((current_cluster - 2) * bs->BPB_SecPerClus);
+        unsigned char *dir_data = diskData->data + (first_sector * bs->BPB_BytsPerSec);
+        
+        for(unsigned int i = 0; i< root_dir_size; i+= sizeof(DirEntry)){
+            DirEntry *dirEntry = (DirEntry *)(dir_data + i);
+
+            // skip current directory
+            if(dirEntry->DIR_Name[0] == 0x00){
+                continue;
+            }
+            // skip LFN
+            if(dirEntry->DIR_Attr == 0x0F){
+                continue;
+            }
+
+            // skip direcotry files
+            if(dirEntry->DIR_Attr == 0x10){
+                continue;
+            }
+
+            char matchFilename[12];
+            int nameEnd = 0;
+            // Copy the filename part
+            for(int j = 0; j< 8; j++){
+                if(dirEntry->DIR_Name[j] != ' '){
+                    matchFilename[nameEnd++] = dirEntry->DIR_Name[j];
+                }
+            }
+
+            // Copy the extension part
+            for(int k = 8; k < 11; k++) {
+                if(dirEntry->DIR_Name[k] != ' '){
+                    if(k == 8){
+                        // Add the '.' character
+                        matchFilename[nameEnd++] = '.';
+                    }
+                    matchFilename[nameEnd++] = dirEntry->DIR_Name[k];
+                }
+            }
+            matchFilename[nameEnd] = '\0';
+
+            if(dirEntry->DIR_Name[0] == 0xE5 && strcmp(matchFilename + 1, filename +1) == 0 && !fileDeleted){
+                fileDeleted = 1;
+                dirEntry->DIR_Name[0] = filename[0];
+                if(dirEntry->DIR_FileSize != 0){
+                    unsigned int starting_cluster = dirEntry->DIR_FstClusLO;
+                    unsigned int end_of_file = 0x0FFFFFFF;
+                    for (unsigned int fat_num = 0; fat_num < bs->BPB_NumFATs; fat_num++) {
+                        unsigned int fat_offset = (bs->BPB_RsvdSecCnt + fat_num * bs->BPB_FATSz32) * bs->BPB_BytsPerSec + starting_cluster * 4;
+                        memcpy(diskData->data + fat_offset, &end_of_file, sizeof(end_of_file));
+                    }
+                }
+                printf("%s: successfully recovered\n", filename);
+            }
+        }
+        // Find the next cluster in the FAT
+        unsigned int fat_offset = bs->BPB_RsvdSecCnt * bs->BPB_BytsPerSec + current_cluster * 4;
+        current_cluster = *((unsigned int *)(diskData->data + fat_offset)) & 0x0FFFFFFF;
+    }
+
+    if(!fileDeleted){
+        printf("%s: file not found\n", filename);
+    }
+
     // Clean up
     freeDiskData(diskData);
     free(bs);
