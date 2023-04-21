@@ -327,6 +327,7 @@ int recoverFile(const char *disk_path, char *filename){
     }
 
     int fileDeleted = 0;
+    DirEntry *newDirEntry = NULL;
 
     // Follow the cluster chain in the FAT
     unsigned int current_cluster = first_root_dir_cluster;
@@ -372,18 +373,23 @@ int recoverFile(const char *disk_path, char *filename){
             }
             matchFilename[nameEnd] = '\0';
 
-            if(dirEntry->DIR_Name[0] == 0xE5 && strcmp(matchFilename + 1, filename +1) == 0 && !fileDeleted){
-                fileDeleted = 1;
-                dirEntry->DIR_Name[0] = filename[0];
-                if(dirEntry->DIR_FileSize != 0){
-                    unsigned int starting_cluster = dirEntry->DIR_FstClusLO;
-                    unsigned int end_of_file = 0x0FFFFFFF;
-                    for (unsigned int fat_num = 0; fat_num < bs->BPB_NumFATs; fat_num++) {
-                        unsigned int fat_offset = (bs->BPB_RsvdSecCnt + fat_num * bs->BPB_FATSz32) * bs->BPB_BytsPerSec + starting_cluster * 4;
-                        memcpy(diskData->data + fat_offset, &end_of_file, sizeof(end_of_file));
-                    }
-                }
-                printf("%s: successfully recovered\n", filename);
+            // if(dirEntry->DIR_Name[0] == 0xE5 && strcmp(matchFilename + 1, filename +1) == 0 && !fileDeleted){
+            //     fileDeleted = 1;
+            //     dirEntry->DIR_Name[0] = filename[0];
+            //     if(dirEntry->DIR_FileSize != 0){
+            //         unsigned int starting_cluster = dirEntry->DIR_FstClusLO;
+            //         unsigned int end_of_file = 0x0FFFFFFF;
+            //         for (unsigned int fat_num = 0; fat_num < bs->BPB_NumFATs; fat_num++) {
+            //             unsigned int fat_offset = (bs->BPB_RsvdSecCnt + fat_num * bs->BPB_FATSz32) * bs->BPB_BytsPerSec + starting_cluster * 4;
+            //             memcpy(diskData->data + fat_offset, &end_of_file, sizeof(end_of_file));
+            //         }
+            //     }
+            //     printf("%s: successfully recovered\n", filename);
+            // }
+
+            if(dirEntry->DIR_Name[0] == 0xE5 && strcmp(matchFilename + 1, filename +1) == 0){
+                fileDeleted++;
+                newDirEntry = dirEntry;
             }
         }
         // Find the next cluster in the FAT
@@ -391,8 +397,22 @@ int recoverFile(const char *disk_path, char *filename){
         current_cluster = *((unsigned int *)(diskData->data + fat_offset)) & 0x0FFFFFFF;
     }
 
-    if(!fileDeleted){
+    if(fileDeleted == 0){
         printf("%s: file not found\n", filename);
+    }else if(fileDeleted > 1){
+        printf("%s: multiple candidates found\n", filename);
+    }else{
+        newDirEntry->DIR_Name[0] = filename[0];
+        if(newDirEntry->DIR_FileSize != 0){
+            unsigned int starting_cluster = newDirEntry->DIR_FstClusLO;
+            unsigned int end_of_file = 0x0FFFFFFF;
+            for (unsigned int fat_num = 0; fat_num < bs->BPB_NumFATs; fat_num++) {
+                unsigned int fat_offset = (bs->BPB_RsvdSecCnt + fat_num * bs->BPB_FATSz32) * bs->BPB_BytsPerSec + starting_cluster * 4;
+                memcpy(diskData->data + fat_offset, &end_of_file, sizeof(end_of_file));
+            }
+        }
+        printf("%s: successfully recovered\n", filename);
+
     }
 
     // Clean up
