@@ -5,7 +5,7 @@ CFLAGS= -g -pedantic -std=gnu17 -Wall -Werror -Wextra -Wno-unused
 all: clean nyufile
 
 nyufile: nyufile.o recover.o
-	$(CC) $(CFLAGS) nyufile.o recover.o -o nyufile
+	$(CC) $(CFLAGS) nyufile.o recover.o -o nyufile -lcrypto
 
 nyufile.o: nyufile.c recover.h
 	$(CC) $(CFLAGS) -c nyufile.c
