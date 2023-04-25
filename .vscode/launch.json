@@ -9,7 +9,7 @@
             "type": "cppdbg",
             "request": "launch",
             "program": "${workspaceFolder}/nyufile",
-            "args": ["fat32.disk", "-r", "HELLO.TXT"],
+            "args": ["disk44", "-r", "NOTHING.TXT", "-s", "c12fa69a4756a84158261e8399616151658677ea"],
             "externalConsole": true,
             "logging": {
               "moduleLoad": false,

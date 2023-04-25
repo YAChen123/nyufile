@@ -153,7 +153,7 @@ int validate_usage(int argc, char **argv){
         return recoverFile(argv[1], filename);
     }else if(r_flag && s_flag){
         // Recover a contiguous file shal
-        printf("Recover a contiguous file with shal\n");
+        recoverFileWithSha1(argv[1], filename, sha1);
     }else if(R_flag && s_flag){
         // Recover a possibly non-contiguous file.
         printf("Recover a possibly non-contiguous file.\n");
@@ -431,3 +431,146 @@ int recoverFile(const char *disk_path, char *filename){
     free(bs);
     return 0;
 }
+
+int recoverFileWithSha1(const char *disk_path, char *filename, char *sha1){
+    BootEntry *bs = getBootEntry(disk_path);
+    if(bs == NULL){
+        return 1;
+    }
+    unsigned int first_data_sector = bs->BPB_RsvdSecCnt + (bs->BPB_NumFATs * bs->BPB_FATSz32);
+    unsigned int first_root_dir_cluster = bs->BPB_RootClus;
+    unsigned int root_dir_size = bs->BPB_BytsPerSec * bs->BPB_SecPerClus;
+
+    DiskData *diskData = getDiskData(disk_path);
+    if(diskData == NULL){
+        free(bs);
+        return 1;
+    }
+
+    int fileDeleted = 0;
+    DirEntry *newDirEntry = NULL;
+    unsigned char sha1_byte_array[SHA_DIGEST_LENGTH];
+    hex_string_to_byte_array(sha1, sha1_byte_array, SHA_DIGEST_LENGTH);
+
+
+    // Follow the cluster chain in the FAT
+    unsigned int current_cluster = first_root_dir_cluster;
+    while (current_cluster < 0x0FFFFFF7) {
+        unsigned int first_sector = first_data_sector + ((current_cluster - 2) * bs->BPB_SecPerClus);
+        unsigned char *dir_data = diskData->data + (first_sector * bs->BPB_BytsPerSec);
+        
+        for(unsigned int i = 0; i< root_dir_size; i+= sizeof(DirEntry)){
+            DirEntry *dirEntry = (DirEntry *)(dir_data + i);
+
+            // skip current directory
+            if(dirEntry->DIR_Name[0] == 0x00){
+                continue;
+            }
+            // skip LFN
+            if(dirEntry->DIR_Attr == 0x0F){
+                continue;
+            }
+
+            // skip direcotry files
+            if(dirEntry->DIR_Attr == 0x10){
+                continue;
+            }
+
+            char matchFilename[12];
+            int nameEnd = 0;
+            // Copy the filename part
+            for(int j = 0; j< 8; j++){
+                if(dirEntry->DIR_Name[j] != ' '){
+                    matchFilename[nameEnd++] = dirEntry->DIR_Name[j];
+                }
+            }
+
+            // Copy the extension part
+            for(int k = 8; k < 11; k++) {
+                if(dirEntry->DIR_Name[k] != ' '){
+                    if(k == 8){
+                        // Add the '.' character
+                        matchFilename[nameEnd++] = '.';
+                    }
+                    matchFilename[nameEnd++] = dirEntry->DIR_Name[k];
+                }
+            }
+            matchFilename[nameEnd] = '\0';
+
+            if(dirEntry->DIR_Name[0] == 0xE5){
+                if(dirEntry->DIR_FileSize != 0){
+                    unsigned int starting_cluster = dirEntry->DIR_FstClusLO;
+                    unsigned int dir_offset = (first_data_sector + (starting_cluster - 2) * bs->BPB_SecPerClus) * bs->BPB_BytsPerSec;
+                    unsigned char* file_content = (unsigned char*) malloc(dirEntry->DIR_FileSize * sizeof(unsigned char));
+
+                    // Read the entire file content with a single memcpy call
+                    memcpy(file_content, diskData->data + dir_offset, dirEntry->DIR_FileSize);
+                    unsigned char computed_hash[SHA_DIGEST_LENGTH];
+                    SHA1(file_content, dirEntry->DIR_FileSize, computed_hash);
+                    if(strcmp(matchFilename + 1, filename +1) == 0 && memcmp(computed_hash, sha1_byte_array, SHA_DIGEST_LENGTH) == 0){
+                        fileDeleted++;
+                        newDirEntry = dirEntry;
+                    }
+                    free(file_content);
+                }else if(strcmp(matchFilename + 1, filename +1) == 0 && strcmp(sha1, "da39a3ee5e6b4b0d3255bfef95601890afd80709") == 0){
+                    fileDeleted++;
+                    newDirEntry = dirEntry;
+                }
+            }
+
+        }
+        // Find the next cluster in the FAT
+        unsigned int fat_offset = bs->BPB_RsvdSecCnt * bs->BPB_BytsPerSec + current_cluster * 4;
+        current_cluster = *((unsigned int *)(diskData->data + fat_offset)) & 0x0FFFFFFF;
+    }
+
+    if(fileDeleted == 0){
+        printf("%s: file not found\n", filename);
+    }else{
+        newDirEntry->DIR_Name[0] = filename[0];
+        if(newDirEntry->DIR_FileSize != 0){
+            unsigned int starting_cluster = newDirEntry->DIR_FstClusLO;
+            unsigned int current_cluster = starting_cluster;
+            unsigned int next_cluster = 0;
+            unsigned int end_of_file = 0x0FFFFFFF;
+
+            // bs->BPB_BytsPerSec - 1 to ensure we got the near whole integer
+            unsigned int num_clusters = (newDirEntry->DIR_FileSize + bs->BPB_BytsPerSec * bs->BPB_SecPerClus - 1) / (bs->BPB_BytsPerSec * bs->BPB_SecPerClus);
+            for (unsigned int fat_num = 0; fat_num < bs->BPB_NumFATs; fat_num++) {
+                // Traverse the chain of clusters in the FAT
+                for (unsigned int i = 0; i < num_clusters; i++) {
+                    // Get the offset of the current cluster in the FAT
+                    unsigned int fat_offset = (bs->BPB_RsvdSecCnt + fat_num * bs->BPB_FATSz32) * bs->BPB_BytsPerSec + current_cluster * 4;
+
+                    // Update the FAT entry to point to the next cluster in the chain
+                    if (i < num_clusters - 1) {
+                        next_cluster = current_cluster + 1;
+                        memcpy(diskData->data + fat_offset, &next_cluster, sizeof(next_cluster));
+                    }
+                    // Mark the final cluster in the chain as end-of-file
+                    else {
+                        memcpy(diskData->data + fat_offset, &end_of_file, sizeof(end_of_file));
+                    }
+
+                    // Update the current cluster to the next cluster
+                    current_cluster = next_cluster;
+                }
+                // Reset the current cluster to the starting cluster for the next FAT
+                current_cluster = starting_cluster;
+            }
+        }
+        printf("%s: successfully recovered with SHA-1\n", filename);
+    }
+
+    // Clean up
+    freeDiskData(diskData);
+    free(bs);
+    return 0;
+}
+
+void hex_string_to_byte_array(const char *hex_string, unsigned char *byte_array, size_t length) {
+    for (size_t i = 0; i < length; i++) {
+        sscanf(hex_string + 2 * i, "%02x", (unsigned int *)&byte_array[i]);
+    }
+}
+

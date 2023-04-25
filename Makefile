@@ -1,11 +1,13 @@
 CC=gcc
-CFLAGS= -g -pedantic -std=gnu17 -Wall -Werror -Wextra -Wno-unused
+CFLAGS= -g -pedantic -std=gnu17 -Wall -Werror -Wextra -Wno-unused -I/usr/local/opt/openssl/include
+LDFLAGS= -L/usr/local/opt/openssl/lib
+
 
 .PHONY: all
 all: clean nyufile
 
 nyufile: nyufile.o recover.o
-	$(CC) $(CFLAGS) nyufile.o recover.o -o nyufile -lcrypto
+	$(CC) $(CFLAGS) $(LDFLAGS) nyufile.o recover.o -o nyufile -lcrypto
 
 nyufile.o: nyufile.c recover.h
 	$(CC) $(CFLAGS) -c nyufile.c
