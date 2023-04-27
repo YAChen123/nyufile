@@ -11,6 +11,7 @@
 #include "recover.h"
 
 #define SHA_DIGEST_LENGTH 20
+#define EMPTY_SHA1 "da39a3ee5e6b4b0d3255bfef95601890afd80709"
 
 #pragma pack(push,1)
 typedef struct BootEntry {
@@ -512,7 +513,7 @@ int recoverFileWithSha1(const char *disk_path, char *filename, char *sha1){
                         newDirEntry = dirEntry;
                     }
                     free(file_content);
-                }else if(strcmp(matchFilename + 1, filename +1) == 0 && strcmp(sha1, "da39a3ee5e6b4b0d3255bfef95601890afd80709") == 0){
+                }else if(strcmp(matchFilename + 1, filename +1) == 0 && strcmp(sha1, EMPTY_SHA1) == 0){
                     fileDeleted++;
                     newDirEntry = dirEntry;
                 }
