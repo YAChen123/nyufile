@@ -285,7 +285,6 @@ int listRootDir(char **argv){
                 printf("/ (starting cluster = %u)\n", dirEntry->DIR_FstClusLO);
             }else{
                 // Non Empty Entry
-                if (dirEntry->DIR_FileSize != 0) {
                     for(int k = 8; k< 11; k++){
                         if(dirEntry->DIR_Name[k] != ' '){
                             if(k == 8){
@@ -294,7 +293,6 @@ int listRootDir(char **argv){
                             printf("%c",dirEntry->DIR_Name[k]);
                         }
                     }
-                }
                 // File entry
                 printf(" (size = %u", dirEntry->DIR_FileSize);
                 if (dirEntry->DIR_FileSize != 0) {
